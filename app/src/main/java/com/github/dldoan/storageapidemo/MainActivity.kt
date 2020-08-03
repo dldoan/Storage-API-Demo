@@ -12,20 +12,27 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.core.net.toUri
 import coil.api.load
 import kotlinx.android.synthetic.main.activity_main.*
 import java.io.File
-import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.concurrent.TimeUnit
 
 
+const val TYPE_JPEG = "image/jpeg"
+const val TYPE_GIF = "image/gif"
+const val TYPE_BMP = "image/bmp"
+const val TYPE_PNG = "image/png"
+const val TYPE_PDF = "application/pdf"
+
+private const val REQUEST_IMAGE_CAPTURE = 1
+private const val REQUEST_CODE_PICK_IMAGES = 2
+private const val REQUEST_CODE_PICK_PDFS = 3
+
 class MainActivity : AppCompatActivity(R.layout.activity_main) {
 
-    val REQUEST_IMAGE_CAPTURE = 1
-    val REQUEST_CODE_PICK_IMAGES = 2
-    val REQUEST_CODE_PICK_PDFS = 3
 
     private var photoFile: File = File("")
 
@@ -37,7 +44,7 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         }
 
         takePhoto.setOnClickListener {
-            takePhoto()
+            capturePhoto()
         }
 
         openImageSelection.setOnClickListener {
@@ -47,12 +54,10 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         openPDFSelection.setOnClickListener {
             openFilePickerPdf()
         }
-
-        this.externalMediaDirs
     }
 
     /**
-     *
+     *  require READ_EXTERNAL_STORAGE permission
      */
     private fun readImages() {
         val imageList = mutableListOf<Image>()
@@ -104,12 +109,12 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
                 val image = Image(contentUri, name, size)
                 imageList += image
 
-                Log.wtf("Debug", "new image: $image")
+                Log.d("Debug", "read new image: $image")
             }
         }
 
         readImageContent.text = "size ${imageList.size} | content: $imageList"
-        Log.wtf("Debug", "content: $imageList")
+        Log.d("Debug", "read images content: $imageList")
 
     }
 
@@ -137,18 +142,18 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         )
     }
 
-    private fun takePhoto() {
+    private fun capturePhoto() {
         Intent(MediaStore.ACTION_IMAGE_CAPTURE).also { takePictureIntent ->
             takePictureIntent.resolveActivity(packageManager)?.also {
                 photoFile = createImageFile()
-                Log.wtf("debug", "file path: ${photoFile.path}")
+                Log.d("debug", "new photo file path: ${photoFile.path}")
 
                 val photoURI: Uri = FileProvider.getUriForFile(
                     this,
                     "com.github.dldoan.storageapidemo.fileprovider",
                     photoFile
                 )
-                Log.wtf("debug", "Photo uri created: $photoURI")
+                Log.d("debug", "Photo uri created: $photoURI")
                 takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI)
                 startActivityForResult(takePictureIntent, REQUEST_IMAGE_CAPTURE)
             }
@@ -159,15 +164,19 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == REQUEST_IMAGE_CAPTURE && resultCode == RESULT_OK) {
-            Log.wtf("debug", "image: ${photoFile.exists()} ${photoFile.path}")
+            Log.d("debug", "image capture: ${photoFile.exists()} ${photoFile.path}")
 
-            imageView.load(photoFile)
-            copyImageToGallery(photoFile)
+            imageView.load(photoFile.toUri())
+            try {
+                copyImageToGallery(photoFile)
+            } catch (e: Exception) {
+                Log.e("debug", "copy image to shared failed", e)
+            }
         }
 
         if (requestCode == REQUEST_CODE_PICK_IMAGES && resultCode == RESULT_OK) {
-            Log.wtf("debug", "uri: ${data?.data}")
-            Log.wtf("debug", "clipdata ${data?.clipData}")
+            Log.d("debug", "singe image uri: ${data?.data}")
+            Log.d("debug", "multi image clipdata ${data?.clipData}")
             data?.data?.let {
                 imageView2.load(it)
             }
@@ -176,7 +185,7 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
             clipData?.let {
                 for (i in 0 until clipData.itemCount) {
                     val path = clipData.getItemAt(i)
-                    Log.wtf("Path:", "Path: $path")
+                    Log.d("debug:", "image uri: $path")
 
                     imageView2.load(path.uri)
                 }
@@ -184,14 +193,14 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         }
 
         if (requestCode == REQUEST_CODE_PICK_PDFS && resultCode == RESULT_OK) {
-            Log.wtf("debug", "uri: ${data?.data}")
-            Log.wtf("debug", "clipdata ${data?.clipData}")
+            Log.d("debug", "single PDF uri: ${data?.data}")
+            Log.d("debug", "multi PDF clipdata ${data?.clipData}")
 
             val clipData: ClipData? = data?.clipData
             clipData?.let {
                 for (i in 0 until clipData.itemCount) {
                     val path = clipData.getItemAt(i)
-                    Log.wtf("Path:", "Path: $path")
+                    Log.d("debug:", "PDF uri: $path")
                 }
             }
 
@@ -200,8 +209,9 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
     }
 
     /**
-     * copy photo from external private storage to external shared storage
-     * no permission required
+     * Copy photo from external private storage to external shared storage.
+     * No permission required for Android 10.
+     * But below Android 10 require WRITE_EXTERNAL_STORAGE permission?!
      */
     private fun copyImageToGallery(file: File) {
         val resolver = this.contentResolver
@@ -212,16 +222,20 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         }
 
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-        Log.wtf("debug", "public image uri: $uri")
+        Log.d("debug", "shared image uri: $uri")
         uri?.let {
-            resolver.openOutputStream(uri)?.use {
-                it.write(file.readBytes())
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                file.inputStream().use { inputStream ->
+                    inputStream.copyTo(outputStream)
+                }
             }
             imageView4.load(uri)
         }
     }
 
-
+    /**
+     * Open Android file picker for images
+     */
     private fun openFilePickerImages() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -240,6 +254,9 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         startActivityForResult(intent, REQUEST_CODE_PICK_IMAGES)
     }
 
+    /**
+     * Open Android file picker for PDFs
+     */
     private fun openFilePickerPdf() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -254,11 +271,3 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
     }
 
 }
-
-const val TYPE_JPEG = "image/jpeg"
-const val TYPE_GIF = "image/gif"
-const val TYPE_BMP = "image/bmp"
-const val TYPE_PNG = "image/png"
-const val TYPE_PDF = "application/pdf"
-const val TYPE_MP4 = "video/mp4"
-const val TYPE_ALL = "*/*"
